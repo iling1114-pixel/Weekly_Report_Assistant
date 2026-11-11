@@ -1,0 +1,16 @@
+# 個人資料：不上傳
+settings.json
+todos.json
+todos.json.bak
+window.json
+工作紀錄草稿.txt
+/週報/
+/template.docx
+
+# 備份、打包產物
+*.bak
+_backup_*/
+build/
+dist/
+__pycache__/
+*.pyc
