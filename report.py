@@ -30,7 +30,7 @@ EMPTY_SAMPLE = (4, 1)  # 空白格
 
 # 版本與更新：發新版時改 VERSION，再跑 release.bat
 VERSION = "1.0.0"
-REPO = "OWNER/weekly-report-helper"  # GitHub 帳號/repo，程式會到這裡查有沒有新版
+REPO = "iling1114-pixel/Weekly_Report_Assistant"  # GitHub 帳號/repo，程式會到這裡查有沒有新版
 
 # 專案、簡稱、收件人都是個人設定（settings.json），程式碼裡不放實際名稱
 FIXED_PROJECTS = ["其他"]
