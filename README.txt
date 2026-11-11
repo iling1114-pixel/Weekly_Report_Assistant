@@ -1,10 +1,5 @@
 週報小幫手 使用說明
 ====================
-
-【下載】
-到 https://github.com/OWNER/weekly-report-helper/releases/latest
-下載「週報小幫手 vX.X.X.zip」
-
 【安裝】
 1. 把整個「週報小幫手」資料夾解壓縮到桌面（或任何你有寫入權限的地方）
    ※ 不要直接在 zip 裡面點開，也不要放到 C:\Program Files
