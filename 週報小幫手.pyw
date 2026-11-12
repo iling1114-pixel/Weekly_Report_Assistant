@@ -1,4 +1,4 @@
-"""週報小幫手視窗：貼上工作紀錄 → 勾選已完成待辦 → 產生 Word → 用 Outlook 寄出。"""
+"""週報小幫手視窗：貼上工作紀錄 → 勾選已完成待辦 → 產生 Word → 用 Outlook 或 Gmail 寄出。"""
 import copy
 import datetime as dt
 import json
@@ -20,18 +20,36 @@ except Exception:
 
 ICON = str(R.RES / "Asset" / "app.ico")
 
-# ---------- Notion 風格配色 ----------
-BG = "#FFFFFF"
-SIDE = "#F7F7F5"      # 次要底色（輸入框、底部列）
-HOVER = "#EFEFED"
-LINE = "#E9E9E7"
-TEXT = "#37352F"
-MUTED = "#787774"
-HINT_FG = "#B4B4B0"
-BLUE = "#2383E2"
-BLUE_HOVER = "#0B6BCB"
-GREEN = "#448361"
-RED = "#D44C47"
+# ---------- Notion 風格配色（淺色 / 深色） ----------
+# 同一組裡每個色碼都要不同：切換主題時是靠色碼對照，把畫面上的舊色換成新色
+PALETTES = {
+    "light": dict(BG="#FFFFFF", SIDE="#F7F7F5", HOVER="#EFEFED", LINE="#E9E9E7", TEXT="#37352F",
+                  MUTED="#787774", HINT_FG="#B4B4B0", BLUE="#2383E2", BLUE_HOVER="#0B6BCB",
+                  GREEN="#448361", RED="#D44C47",
+                  SCROLL_ACTIVE="#D3D3D0", SELECT_BG="#CCE3F9", CHECK_LINE="#A5A4A0"),
+    "dark": dict(BG="#191919", SIDE="#202020", HOVER="#2F2F2F", LINE="#373737", TEXT="#E6E6E4",
+                 MUTED="#9B9A97", HINT_FG="#5F5E5B", BLUE="#2383E2", BLUE_HOVER="#3A92E8",
+                 GREEN="#52A37F", RED="#E5675F",
+                 SCROLL_ACTIVE="#4A4A48", SELECT_BG="#1F4A73", CHECK_LINE="#6B6A67"),
+}
+THEME = "light"
+BG = SIDE = HOVER = LINE = TEXT = MUTED = HINT_FG = BLUE = BLUE_HOVER = GREEN = RED = ""
+SCROLL_ACTIVE = SELECT_BG = CHECK_LINE = ""  # 捲軸按住、選取反白、未勾選框線
+
+
+def set_palette(name):
+    """換掉模組裡的色票（之後新建的元件就用新色），回傳 {舊色碼: 新色碼}。"""
+    global THEME
+    name = name if name in PALETTES else "light"
+    old, new = PALETTES[THEME], PALETTES[name]
+    THEME = name
+    globals().update(new)
+    if "Button" in globals():
+        Button.restyle()
+    return {old[k].upper(): new[k] for k in new}
+
+
+set_palette("light")
 
 FAMILY = "Microsoft JhengHei UI"
 FONT = (FAMILY, 11)
@@ -39,6 +57,7 @@ FONT_SM = (FAMILY, 9)
 FONT_B = (FAMILY, 11, "bold")
 FONT_H = (FAMILY, 13, "bold")
 FONT_TITLE = (FAMILY, 22, "bold")
+FONT_DATE = (FAMILY, 16, "bold")
 FONT_DONE = (FAMILY, 11, "overstrike")
 FIELD_HINT = "點這裡開始打，會自動編號・Tab 變子項目"
 NEW_PROJ_HINT = "請輸入新專案名稱"
@@ -54,11 +73,15 @@ SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # 處理中的轉圈動畫
 class Button(tk.Label):
     """扁平按鈕：ghost（灰底 hover）、primary（藍底）、outline（細框）。"""
 
-    STYLES = {
-        "ghost": dict(bg=BG, fg=MUTED, hover=HOVER, border=BG),
-        "outline": dict(bg=BG, fg=TEXT, hover=HOVER, border=LINE),
-        "primary": dict(bg=BLUE, fg="white", hover=BLUE_HOVER, border=BLUE),
-    }
+    STYLES = {}
+
+    @classmethod
+    def restyle(cls):
+        cls.STYLES = {
+            "ghost": dict(bg=BG, fg=MUTED, hover=HOVER, border=BG),
+            "outline": dict(bg=BG, fg=TEXT, hover=HOVER, border=LINE),
+            "primary": dict(bg=BLUE, fg="white", hover=BLUE_HOVER, border=BLUE),
+        }
 
     def __init__(self, parent, text, command, kind="ghost", font=FONT, padx=10, pady=4):
         s = self.STYLES[kind]
@@ -82,6 +105,98 @@ class Button(tk.Label):
         else:
             self.configure(bg=LINE, fg=HINT_FG, highlightbackground=LINE, cursor="arrow")
 
+    def remap(self, cmap):
+        """切換主題：記住的顏色也換成新色。"""
+        self._bg, self._hover, self._fg, self._border = (
+            cmap.get(c.upper(), c) for c in (self._bg, self._hover, self._fg, self._border))
+
+
+Button.restyle()
+
+
+class Segmented(tk.Frame):
+    """分段切換：灰底框裡並排選項，選中的白底粗字（取代 Radiobutton）。options: [(值, 文字)]。"""
+
+    def __init__(self, parent, variable, options, on_change=None):
+        super().__init__(parent, bg=SIDE, padx=3, pady=3, highlightthickness=1, highlightbackground=LINE)
+        self.var, self._on_change, self._items = variable, on_change, {}
+        for value, text in options:
+            lb = tk.Label(self, text=text, font=FONT, padx=16, pady=3, cursor="hand2",
+                          highlightthickness=1)
+            lb.pack(side="left")
+            lb.bind("<Button-1>", lambda e, v=value: self.var.set(v))
+            lb.bind("<Enter>", lambda e, v=value: self._hover(v, True))
+            lb.bind("<Leave>", lambda e, v=value: self._hover(v, False))
+            self._items[value] = lb
+        self.var.trace_add("write", lambda *_: self._paint())
+        self._paint()
+
+    def _paint(self):
+        cur = self.var.get()
+        for value, lb in self._items.items():
+            on = value == cur
+            lb.configure(bg=BG if on else SIDE, fg=TEXT if on else MUTED, font=FONT_B if on else FONT,
+                         highlightbackground=LINE if on else SIDE)
+        if self._on_change:
+            self._on_change(cur)
+
+    def _hover(self, value, inside):
+        if value != self.var.get():
+            self._items[value].configure(bg=HOVER if inside else SIDE)
+
+
+COLOR_OPTS = ("bg", "fg", "highlightbackground", "highlightcolor", "insertbackground",
+              "activebackground", "activeforeground", "selectbackground", "selectforeground",
+              "selectcolor", "disabledforeground", "readonlybackground")
+
+
+def recolor(widget, cmap):
+    """整棵元件樹把舊色換新色：元件本身、Text 的 tag、Canvas 上畫的圖形、Button 記住的顏色。"""
+    def swap(get, put, opts):
+        for o in opts:
+            try:
+                v = str(get(o))
+            except tk.TclError:
+                continue
+            if v.upper() in cmap:
+                put(o, cmap[v.upper()])
+
+    swap(widget.cget, lambda o, v: widget.configure(**{o: v}), COLOR_OPTS)
+    if isinstance(widget, tk.Text):
+        for tag in widget.tag_names():
+            swap(lambda o: widget.tag_cget(tag, o), lambda o, v: widget.tag_configure(tag, **{o: v}),
+                 ("foreground", "background", "selectbackground", "selectforeground"))
+    elif isinstance(widget, tk.Canvas):
+        for item in widget.find_all():
+            swap(lambda o: widget.itemcget(item, o), lambda o, v: widget.itemconfigure(item, **{o: v}),
+                 ("fill", "outline"))
+    if isinstance(widget, ttk.Combobox):  # 下拉清單是 Tcl 自己建的，winfo_children 抓不到
+        try:
+            pd = widget.tk.call("ttk::combobox::PopdownWindow", widget)
+            widget.tk.call(f"{pd}.f.l", "configure", "-background", BG, "-foreground", TEXT,
+                           "-selectbackground", SELECT_BG, "-selectforeground", TEXT)
+        except tk.TclError:
+            pass
+    if isinstance(widget, Button):
+        widget.remap(cmap)
+    elif isinstance(widget, Segmented):
+        widget._paint()
+    for child in widget.winfo_children():
+        recolor(child, cmap)
+
+
+def dark_titlebar(win):
+    """Windows 10/11 標題列跟著主題變深色/淺色（不支援的版本就算了）。"""
+    try:
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        on = ctypes.c_int(1 if THEME == "dark" else 0)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE（新版 20、舊版 19）
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(on), 4) == 0:
+                break
+    except Exception:
+        pass
+
 
 class App(tk.Tk):
     def __init__(self):
@@ -103,6 +218,9 @@ class App(tk.Tk):
                 self.destroy()
                 raise SystemExit
             self.deiconify()
+        set_palette(R.THEME)  # 建畫面前先套主題
+        self.configure(bg=BG)
+        dark_titlebar(self)
         self.state_ = R.load_state()
         self.vars = {}          # key -> BooleanVar
         self.manual = set()     # 使用者手動改過的 key，自動判斷不覆蓋
@@ -180,9 +298,12 @@ class App(tk.Tk):
                selectbackground=[("readonly", BG)], selectforeground=[("readonly", TEXT)],
                foreground=[("readonly", TEXT)], bordercolor=[("focus", BLUE)])
         self.option_add("*TCombobox*Listbox.font", FONT_SM)
+        for opt, color in (("background", BG), ("foreground", TEXT),
+                           ("selectBackground", SELECT_BG), ("selectForeground", TEXT)):
+            self.option_add(f"*TCombobox*Listbox.{opt}", color)
         st.configure("Thin.Vertical.TScrollbar", background=LINE, troughcolor=BG, bordercolor=BG,
                      lightcolor=LINE, darkcolor=LINE, arrowsize=0, gripcount=0, width=8)
-        st.map("Thin.Vertical.TScrollbar", background=[("active", "#D3D3D0")])
+        st.map("Thin.Vertical.TScrollbar", background=[("active", SCROLL_ACTIVE)])
         st.layout("Thin.Vertical.TScrollbar",
                   [("Vertical.Scrollbar.trough", {"children": [("Vertical.Scrollbar.thumb",
                                                                 {"expand": "1", "sticky": "nswe"})],
@@ -192,7 +313,7 @@ class App(tk.Tk):
     def _text(self, parent, height=None):
         t = tk.Text(parent, font=FONT, wrap="word", undo=True, relief="flat", bg=BG, fg=TEXT,
                     padx=14, pady=12, spacing1=2, spacing3=2, insertbackground=TEXT,
-                    selectbackground="#CCE3F9", selectforeground=TEXT,
+                    selectbackground=SELECT_BG, selectforeground=TEXT,
                     highlightthickness=1, highlightbackground=LINE, highlightcolor=BLUE)
         if height:
             t.configure(height=height)
@@ -232,16 +353,15 @@ class App(tk.Tk):
         return f
 
     def _build_ui(self):
-        # 頁首：大標題 + 屬性列
+        # 頁首：週報日期列
         head = tk.Frame(self, bg=BG, padx=40, pady=24)
         head.pack(fill="x")
-        tk.Label(head, text="週報小幫手", font=FONT_TITLE, bg=BG, fg=TEXT).pack(anchor="w")
         Button(head, "⚙ 設定", self.open_settings, kind="ghost", font=FONT_SM).place(relx=1, y=0, anchor="ne")
         prop = tk.Frame(head, bg=BG)
-        prop.pack(anchor="w", pady=(10, 0))
-        tk.Label(prop, text="週報日期", font=FONT, bg=BG, fg=MUTED, width=8, anchor="w").pack(side="left")
+        prop.pack(anchor="w")
+        tk.Label(prop, text="週報日期", font=FONT_DATE, bg=BG, fg=MUTED, anchor="w").pack(side="left", padx=(0, 12))
         self.date = tk.StringVar(value=f"{R.this_friday():%Y.%m.%d}")
-        ent = tk.Entry(prop, textvariable=self.date, width=11, font=FONT, relief="flat", bg=BG, fg=TEXT,
+        ent = tk.Entry(prop, textvariable=self.date, width=11, font=FONT_DATE, relief="flat", bg=BG, fg=TEXT,
                        insertbackground=TEXT, highlightthickness=1, highlightbackground=BG,
                        highlightcolor=BLUE)
         ent.pack(side="left", ipady=3, ipadx=4)
@@ -378,14 +498,15 @@ class App(tk.Tk):
         self.undo_btn = Button(foot, "復原", lambda: None, kind="outline", font=FONT_SM, padx=8, pady=2)
 
         # 由右往左：產生並寄送 → 分隔 → 重寄這份舊檔
-        self.gen_btn = Button(foot, "產生並開 Outlook", self.generate, kind="primary", font=FONT_B, padx=18, pady=7)
+        self.gen_btn = Button(foot, f"產生並開 {self._mail_name()}", self.generate, kind="primary",
+                              font=FONT_B, padx=18, pady=7)
         self.gen_btn.pack(side="right")
         self.gen_step = tk.Label(foot, text="", font=FONT_SM, bg=SIDE, fg=MUTED)
         self.gen_step.pack(side="right", padx=(0, 6))
         tk.Frame(foot, bg=LINE, width=1).pack(side="right", fill="y", padx=18)
         self.resend_btn = resend = Button(foot, "重寄這份", self.send, kind="outline", font=FONT_SM, padx=10, pady=5)
         resend.pack(side="right")
-        self._tooltip(resend, "不重新產生週報，直接用左邊這份 Word 開 Outlook 郵件", above=True)
+        self._tooltip(resend, "不重新產生週報，直接用左邊這份 Word 開郵件", above=True)
         f = R.output_path(R.this_friday())
         self.mail_file = tk.StringVar(value=str(f) if f.exists() else "")
         self.file_chip = Button(foot, "", self.pick_mail_file, kind="ghost", font=FONT_SM, padx=8, pady=7)
@@ -707,12 +828,12 @@ class App(tk.Tk):
                                                   label="下載"))
         threading.Thread(target=run, daemon=True).start()
 
-    def _toast(self, text, color=GREEN, undo=None, label="復原"):
+    def _toast(self, text, color=None, undo=None, label="復原"):
         """成功訊息（綠）6 秒後清掉；進行中、提醒（灰）留著。undo：訊息旁顯示 label 按鈕，按了執行。"""
         if self._toast_job:
             self.after_cancel(self._toast_job)
             self._toast_job = None
-        self.status.configure(text=text, fg=color)
+        self.status.configure(text=text, fg=color or GREEN)  # 預設綠色在執行時才取，切換主題後才會跟著變
         self.undo_btn.pack_forget()
         self.undo_btn.configure(text=label)
         if undo:
@@ -850,7 +971,7 @@ class App(tk.Tk):
                 box.create_line(4.5, 9, 7.5, 12.5, 13.5, 5.5, fill="white", width=2)
                 lbl.configure(fg=HINT_FG, font=FONT_DONE)
             else:
-                box.create_rectangle(1, 1, 17, 17, fill=BG, outline="#A5A4A0", width=1.5)
+                box.create_rectangle(1, 1, 17, 17, fill=BG, outline=CHECK_LINE, width=1.5)
                 lbl.configure(fg=TEXT, font=FONT)
             if v.get() and key not in self.manual:
                 tag.pack(side="right", anchor="n", padx=(4, 10), pady=6, before=lbl)
@@ -889,7 +1010,7 @@ class App(tk.Tk):
             t = tk.Toplevel(self)
             t.wm_overrideredirect(True)
             t.attributes("-topmost", True)
-            tk.Label(t, text=text, font=FONT_SM, bg=TEXT, fg="white", padx=8, pady=4,
+            tk.Label(t, text=text, font=FONT_SM, bg=TEXT, fg=BG, padx=8, pady=4,
                      justify="left").pack()
             t.update_idletasks()
             y = w.winfo_rooty() - t.winfo_reqheight() - 4 if above else w.winfo_rooty() + w.winfo_height() + 4
@@ -1398,16 +1519,24 @@ class App(tk.Tk):
             return
         date = self._date()
         if date:
-            self._open_outlook(path, date)
+            self._open_mail(path, date)
 
-    def _open_outlook(self, path, date, prefix="", mask=None):
+    @staticmethod
+    def _mail_name():
+        return R.MAIL_NAMES[R.MAIL_VIA]
+
+    def _open_mail(self, path, date, prefix="", mask=None):
+        name = self._mail_name()
+        app = "Outlook（classic）" if R.MAIL_VIA == "outlook" else "Gmail"
+        done = ("Gmail 草稿已開好：把檔案總管選好的週報拖進信裡，確認後按傳送" if R.MAIL_VIA == "gmail"
+                else f"Outlook 郵件已開好：{R.mail_subject(date)}，確認後按傳送")
+
         def failed(e):
             self._toast(prefix.rstrip("・"))
-            messagebox.showwarning("週報小幫手", f"開不了 Outlook（classic）：\n{e}\n\n週報 Word 在：{path}")
+            messagebox.showwarning("週報小幫手", f"開不了 {app}：\n{e}\n\n週報 Word 在：{path}")
 
-        self._run_busy("正在開啟 Outlook…", lambda: R.open_mail(path, date),
-                       lambda _: self._toast(prefix + f"Outlook 郵件已開好：{R.mail_subject(date)}，確認後按傳送"),
-                       failed, prefix, mask)
+        self._run_busy(f"正在開啟 {name}…", lambda: R.send_mail(path, date),
+                       lambda _: self._toast(prefix + done), failed, prefix, mask)
 
     def _todo_text(self, key):
         it = self.state_["todos"][key[0]][key[1]]
@@ -1459,7 +1588,7 @@ class App(tk.Tk):
             self.manual = set(self.vars)
             self._inserted.clear()  # 那些待辦已刪除，寫進紀錄的行就是正式工作項目了
             self.mail_file.set(str(path))
-            self._open_outlook(path, date, f"✓ {path.name}（刪除 {len(done)} 筆已完成待辦）・", note)
+            self._open_mail(path, date, f"✓ {path.name}（刪除 {len(done)} 筆已完成待辦）・", note)
 
         def failed(e):
             if isinstance(e, PermissionError):
@@ -1473,6 +1602,11 @@ class App(tk.Tk):
     def open_settings(self):
         if not SettingsDialog(self).saved:
             return
+        self.gen_btn.configure(text=f"產生並開 {self._mail_name()}")
+        if R.THEME != THEME:  # 換主題：不用重開，整個畫面直接換色
+            recolor(self, set_palette(R.THEME))
+            self._style()
+            dark_titlebar(self)
         # 設定裡新列的專案補進清單（已有的專案、待辦不動）
         new = [p for p in R.FIXED_PROJECTS if p not in self.state_["projects"]]
         if new:
@@ -1532,7 +1666,7 @@ class EmptyProjectsDialog(tk.Toplevel):
                 box.create_line(4.5, 9, 7.5, 12.5, 13.5, 5.5, fill="white", width=2)
                 lbl.configure(fg=TEXT)
             else:
-                box.create_rectangle(1, 1, 17, 17, fill=BG, outline="#A5A4A0", width=1.5)
+                box.create_rectangle(1, 1, 17, 17, fill=BG, outline=CHECK_LINE, width=1.5)
                 lbl.configure(fg=HINT_FG)
         v.trace_add("write", draw)
         draw()
@@ -1569,19 +1703,38 @@ class SettingsDialog(tk.Toplevel):
                 ("aliases", "簡稱", "每行一個「簡稱=全名」，例：北專=台北新案專案", 3)]
         value = {"projects": "\n".join(s["projects"]),
                  "aliases": "\n".join(f"{k}={v}" for k, v in s["aliases"].items())}
-        for i, (key, label, hint, h) in enumerate(rows, start=1):
+        self.mail_via = tk.StringVar(value=s.get("mail_via", "outlook"))
+        r = 1  # row 0 是第一次使用的說明
+        for key, label, hint, h in rows:
+            if key == "mail_to":  # 寄送方式放在收件人上面
+                tk.Label(self, text="寄送方式", font=FONT, bg=BG, fg=MUTED, anchor="nw", width=8).grid(
+                    row=r, column=0, sticky="nw", pady=(6, 0))
+                tips = {"outlook": "用 Outlook（傳統版）開郵件，週報 Word 自動附上",
+                        "gmail": "用瀏覽器開 Gmail 草稿，週報 Word 要自己拖進信裡"}
+                tip = tk.Label(self, font=FONT_SM, bg=BG, fg=BLUE)
+                tip.grid(row=r + 1, column=1, sticky="w")
+                Segmented(self, self.mail_via, [("outlook", "Outlook"), ("gmail", "Gmail")],
+                          on_change=lambda v: tip.configure(text=tips.get(v, ""))).grid(
+                    row=r, column=1, sticky="w", pady=(6, 0))
+                r += 2
             tk.Label(self, text=label, font=FONT, bg=BG, fg=MUTED, anchor="nw", width=8).grid(
-                row=i * 2, column=0, sticky="nw", pady=(6, 0))
+                row=r, column=0, sticky="nw", pady=(6, 0))
             w = tk.Text(self, width=56, height=h, font=FONT, relief="flat", bg=SIDE, fg=TEXT,
                         wrap="none" if h == 1 else "word",
                         insertbackground=TEXT, highlightthickness=1, highlightbackground=LINE,
                         highlightcolor=BLUE, padx=6, pady=4)
             w.insert("1.0", value.get(key, s.get(key, "")).rstrip("\n"))
-            w.grid(row=i * 2, column=1, sticky="w", pady=(6, 0))
+            w.grid(row=r, column=1, sticky="w", pady=(6, 0))
             if h == 1:
                 w.bind("<Return>", lambda e: "break")  # 單行欄位不換行
-            tk.Label(self, text=hint, font=FONT_SM, bg=BG, fg=HINT_FG).grid(row=i * 2 + 1, column=1, sticky="w")
+            tk.Label(self, text=hint, font=FONT_SM, bg=BG, fg=HINT_FG).grid(row=r + 1, column=1, sticky="w")
             self.fields[key] = w
+            r += 2
+        tk.Label(self, text="外觀", font=FONT, bg=BG, fg=MUTED, anchor="nw", width=8).grid(
+            row=r, column=0, sticky="nw", pady=(10, 0))
+        self.theme = tk.StringVar(value=s.get("theme", "light"))
+        Segmented(self, self.theme, [("light", "淺色"), ("dark", "深色")]).grid(
+            row=r, column=1, sticky="w", pady=(10, 0))
         foot = tk.Frame(self, bg=BG)
         foot.grid(row=99, column=0, columnspan=2, sticky="e", pady=(16, 0))
         Button(foot, "取消", self.destroy, kind="outline", font=FONT_SM, padx=12, pady=5).pack(side="left", padx=(0, 8))
@@ -1592,6 +1745,7 @@ class SettingsDialog(tk.Toplevel):
         x = (self.winfo_screenwidth() - self.winfo_width()) // 2
         y = (self.winfo_screenheight() - self.winfo_height()) // 3
         self.geometry(f"+{x}+{y}")
+        dark_titlebar(self)
         self.grab_set()
         self.fields["header"].focus_set()
         self.wait_window()
@@ -1614,11 +1768,13 @@ class SettingsDialog(tk.Toplevel):
                     aliases[k] = v
         self.saved = R.save_settings({
             "header": self._get("header"),
+            "mail_via": self.mail_via.get(),
             "mail_to": self._get("mail_to"),
             "mail_cc": self._get("mail_cc"),
             "mail_body": self._get("mail_body") + "\n",
             "projects": [p.strip() for p in self._get("projects").splitlines() if p.strip()],
             "aliases": aliases,
+            "theme": self.theme.get(),
         })
         self.destroy()
 

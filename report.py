@@ -492,10 +492,15 @@ FAX：(02) 1234-5679
 100台北市範例區範例路1號2樓
 """
 HEADER = ""  # 週報表頭（例：王小明 UI/UX設計師），空的就沿用範本
+MAIL_VIA = "outlook"  # 寄送管道：outlook / gmail
+MAIL_NAMES = {"outlook": "Outlook", "gmail": "Gmail"}
+THEME = "light"  # 外觀：light / dark
 
 # 第一次開時的預設值：公司資訊、專案帶好，個人欄位留空；實際值存在 settings.json
 DEFAULT_SETTINGS = {
     "header": "",
+    "mail_via": MAIL_VIA,
+    "theme": THEME,
     "mail_to": MAIL_TO,
     "mail_cc": MAIL_CC,
     "mail_body": MAIL_BODY,
@@ -507,11 +512,13 @@ DEFAULT_SETTINGS = {
 # ---------- 個人設定 ----------
 def load_settings():
     """讀 settings.json 套到模組變數；沒有檔案回傳 None（要請使用者先填）。"""
-    global HEADER, MAIL_TO, MAIL_CC, MAIL_BODY, FIXED_PROJECTS, ALIASES
+    global HEADER, MAIL_TO, MAIL_CC, MAIL_BODY, MAIL_VIA, THEME, FIXED_PROJECTS, ALIASES
     if not SETTINGS.exists():
         return None
     s = dict(DEFAULT_SETTINGS, **json.loads(SETTINGS.read_text(encoding="utf-8")))
     HEADER, MAIL_TO, MAIL_CC, MAIL_BODY = s["header"], s["mail_to"], s["mail_cc"], s["mail_body"]
+    MAIL_VIA = s["mail_via"] if s["mail_via"] in MAIL_NAMES else "outlook"
+    THEME = s["theme"] if s["theme"] in ("light", "dark") else "light"
     FIXED_PROJECTS, ALIASES = list(s["projects"]) or ["其他"], dict(s["aliases"])
     return s
 
@@ -572,6 +579,28 @@ def open_mail(path, date):
                        creationflags=subprocess.CREATE_NO_WINDOW, timeout=120)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip() or "Outlook 沒有回應")
+
+
+def open_gmail(path, date):
+    """瀏覽器開一封填好收件者、主旨、內文的 Gmail 草稿，並在檔案總管選好週報，讓使用者拖進信裡。
+    Gmail 網址帶不了附件，所以附件要手動加。"""
+    import subprocess
+    import urllib.parse
+    import webbrowser
+    q = urllib.parse.urlencode({
+        "view": "cm", "fs": "1",
+        "to": ",".join(a.strip() for a in MAIL_TO.split(";") if a.strip()),
+        "cc": ",".join(a.strip() for a in MAIL_CC.split(";") if a.strip()),
+        "su": mail_subject(date), "body": MAIL_BODY,
+    }, quote_via=urllib.parse.quote)
+    if not webbrowser.open("https://mail.google.com/mail/?" + q):
+        raise RuntimeError("開不了瀏覽器")
+    subprocess.Popen(["explorer", "/select,", str(Path(path).resolve())])
+
+
+def send_mail(path, date):
+    """依設定的寄送管道開好郵件（都不會自動寄出）。"""
+    (open_gmail if MAIL_VIA == "gmail" else open_mail)(path, date)
 
 
 # ---------- 產生 Word ----------
